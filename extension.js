@@ -17,29 +17,35 @@ const HOVER_CLOSE_MS = 400;
 const decoder = new TextDecoder();
 
 const numbers = list => list.filter(v => v !== null);
+const joinDetail = (...parts) => parts.filter(p => p).join('   ');
 const average = list => {
     const nums = numbers(list);
     return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : null;
 };
 
-function readFile(path) {
+Gio._promisify(Gio.File.prototype, 'load_contents_async');
+Gio._promisify(Gio.File.prototype, 'enumerate_children_async');
+Gio._promisify(Gio.FileEnumerator.prototype, 'next_files_async');
+Gio._promisify(Gio.FileEnumerator.prototype, 'close_async');
+
+async function readFile(path, cancellable) {
     try {
-        const [, bytes] = GLib.file_get_contents(path);
+        const [bytes] = await Gio.File.new_for_path(path).load_contents_async(cancellable);
         return decoder.decode(bytes);
     } catch {
         return null;
     }
 }
 
-function listDir(path) {
+async function listDir(path, cancellable) {
     try {
-        const iter = Gio.File.new_for_path(path).enumerate_children(
-            'standard::name', Gio.FileQueryInfoFlags.NONE, null);
+        const iter = await Gio.File.new_for_path(path).enumerate_children_async(
+            'standard::name', Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, cancellable);
         const names = [];
-        let info;
-        while ((info = iter.next_file(null)))
-            names.push(info.get_name());
-        iter.close(null);
+        let infos;
+        while ((infos = await iter.next_files_async(64, GLib.PRIORITY_DEFAULT, cancellable)).length)
+            names.push(...infos.map(info => info.get_name()));
+        await iter.close_async(GLib.PRIORITY_DEFAULT, cancellable);
         return names;
     } catch {
         return [];
@@ -47,27 +53,32 @@ function listDir(path) {
 }
 
 // Find the CPU temperature sensor, most accurate source first
-function findCpuTempPath() {
+async function findCpuTempPath(cancellable) {
     const wanted = [
         ['coretemp', /^Package id/],
         ['k10temp', /^(Tctl|Tdie)$/],
         ['zenpower', /^Tdie$/],
         ['thinkpad', /^CPU$/],
     ];
-    const hwmons = listDir('/sys/class/hwmon').map(dir => {
+    const hwmons = await Promise.all((await listDir('/sys/class/hwmon', cancellable)).map(async dir => {
         const base = `/sys/class/hwmon/${dir}`;
-        return {base, name: readFile(`${base}/name`)?.trim(), files: listDir(base)};
-    });
+        const [name, files] = await Promise.all([
+            readFile(`${base}/name`, cancellable),
+            listDir(base, cancellable),
+        ]);
+        return {base, name: name?.trim(), files};
+    }));
     for (const [name, label] of wanted) {
         for (const hw of hwmons.filter(h => h.name === name)) {
             for (const file of hw.files.filter(f => /^temp\d+_label$/.test(f))) {
-                if (label.test(readFile(`${hw.base}/${file}`)?.trim() ?? ''))
+                if (label.test((await readFile(`${hw.base}/${file}`, cancellable))?.trim() ?? ''))
                     return `${hw.base}/${file.replace('_label', '_input')}`;
             }
         }
     }
-    for (const zone of listDir('/sys/class/thermal').filter(z => z.startsWith('thermal_zone'))) {
-        const type = readFile(`/sys/class/thermal/${zone}/type`)?.trim();
+    const zones = (await listDir('/sys/class/thermal', cancellable)).filter(z => z.startsWith('thermal_zone'));
+    for (const zone of zones) {
+        const type = (await readFile(`/sys/class/thermal/${zone}/type`, cancellable))?.trim();
         if (['x86_pkg_temp', 'TCPU', 'cpu-thermal', 'acpitz'].includes(type))
             return `/sys/class/thermal/${zone}/temp`;
     }
@@ -75,19 +86,29 @@ function findCpuTempPath() {
 }
 
 class Sampler {
-    constructor() {
+    constructor(cancellable) {
+        this._cancellable = cancellable;
         this._prevCpu = null;
-        this._tempPath = findCpuTempPath();
+        this._tempPath = undefined;
         this.cpu = [];
         this.ram = [];
         this.temp = [];
         this.info = {};
     }
 
-    sample() {
-        this._push(this.cpu, this._readCpu());
-        this._push(this.ram, this._readRam());
-        this._push(this.temp, this._readTemp());
+    async sample() {
+        const c = this._cancellable;
+        if (this._tempPath === undefined)
+            this._tempPath = await findCpuTempPath(c);
+        const [stat, loadavg, meminfo, temp] = await Promise.all([
+            readFile('/proc/stat', c),
+            readFile('/proc/loadavg', c),
+            readFile('/proc/meminfo', c),
+            this._tempPath ? readFile(this._tempPath, c) : null,
+        ]);
+        this._push(this.cpu, this._parseCpu(stat, loadavg));
+        this._push(this.ram, this._parseRam(meminfo));
+        this._push(this.temp, this._parseTemp(temp));
     }
 
     _push(list, value) {
@@ -96,8 +117,11 @@ class Sampler {
             list.shift();
     }
 
-    _readCpu() {
-        const line = readFile('/proc/stat')?.split('\n', 1)[0];
+    _parseCpu(stat, loadavg) {
+        const load = loadavg?.split(' ', 3);
+        if (load)
+            this.info.load = load.join('  ');
+        const line = stat?.split('\n', 1)[0];
         if (!line)
             return null;
         const v = line.trim().split(/\s+/).slice(1, 9).map(Number);
@@ -105,16 +129,12 @@ class Sampler {
         const total = v.reduce((a, b) => a + b, 0);
         const prev = this._prevCpu;
         this._prevCpu = {idle, total};
-        const load = readFile('/proc/loadavg')?.split(' ', 3);
-        if (load)
-            this.info.load = load.join('  ');
         if (!prev || total === prev.total)
             return null;
         return 100 * (1 - (idle - prev.idle) / (total - prev.total));
     }
 
-    _readRam() {
-        const text = readFile('/proc/meminfo');
+    _parseRam(text) {
         if (!text)
             return null;
         const kb = key => Number(text.match(new RegExp(`^${key}:\\s+(\\d+)`, 'm'))?.[1] ?? 0);
@@ -130,11 +150,9 @@ class Sampler {
         return total ? 100 * used / total : null;
     }
 
-    _readTemp() {
-        if (!this._tempPath)
-            return null;
-        const raw = Number(readFile(this._tempPath));
-        return Number.isFinite(raw) && raw > 0 ? raw / 1000 : null;
+    _parseTemp(text) {
+        const raw = Number(text);
+        return text && Number.isFinite(raw) && raw > 0 ? raw / 1000 : null;
     }
 }
 
@@ -150,11 +168,15 @@ class Graph extends St.DrawingArea {
     _init(series, color, min, max, showAvg) {
         super._init({style_class: 'sysmon-graph'});
         this._showAvg = showAvg;
-        this.connect('style-changed', () => this.queue_repaint());
         this._series = series;
         this._color = color;
         this._min = min;
         this._max = max;
+    }
+
+    vfunc_style_changed() {
+        super.vfunc_style_changed();
+        this.queue_repaint();
     }
 
     vfunc_repaint() {
@@ -266,7 +288,7 @@ class SysMonButton extends PanelMenu.Button {
         this._clickGesture.set_enabled(false);
         this._click = new Clutter.ClickGesture();
         this._click.set_recognize_on_press(true);
-        this._click.connect('recognize', () => {
+        this._clickId = this._click.connect('recognize', () => {
             if (this.menu.isOpen && this._hoverOpened)
                 this._stopHover();
             else
@@ -274,8 +296,8 @@ class SysMonButton extends PanelMenu.Button {
         });
         this.add_action(this._click);
 
-        this.connect('notify::hover', () => this._onHover());
-        this.menu.connect('open-state-changed', (menu, open) => {
+        this._hoverId = this.connect('notify::hover', () => this._onHover());
+        this._menuStateId = this.menu.connect('open-state-changed', (menu, open) => {
             if (!open)
                 this._stopHover();
             else
@@ -336,17 +358,16 @@ class SysMonButton extends PanelMenu.Button {
 
         this._label.text = `CPU ${fmt(cpu, '%')}  RAM ${fmt(ram, '%')}  ${fmt(temp, '°C')}`;
         this._cpu.value.text = fmt(cpu, '%');
-        this._cpu.detail.text = [
+        this._cpu.detail.text = joinDetail(
             `avg ${fmt(average(s.cpu), '%')}`,
-            s.info.load ? `load ${s.info.load}` : '',
-        ].filter(t => t).join('   ');
+            s.info.load ? `load ${s.info.load}` : '');
 
         this._ram.value.text = fmt(ram, '%');
         const rams = numbers(s.ram);
         const peak = rams.length && s.info.ramTotalKb
             ? `peak ${(Math.max(...rams) / 100 * s.info.ramTotalKb / 1048576).toFixed(1)} GiB`
             : '';
-        this._ram.detail.text = [s.info.ram, peak, s.info.swap].filter(t => t).join('   ');
+        this._ram.detail.text = joinDetail(s.info.ram, peak, s.info.swap);
 
         this._temp.value.text = fmt(temp, '°C');
         const temps = numbers(s.temp);
@@ -368,26 +389,48 @@ class SysMonButton extends PanelMenu.Button {
             GLib.source_remove(this._hoverOpenId);
         this._hoverOpenId = 0;
         this._stopHover();
+        this._click.disconnect(this._clickId);
+        this.menu.disconnect(this._menuStateId);
+        this.disconnect(this._hoverId);
         super.destroy();
     }
 });
 
 export default class SysMonExtension extends Extension {
     enable() {
-        this._sampler = new Sampler();
+        this._cancellable = new Gio.Cancellable();
+        this._busy = false;
+        this._sampler = new Sampler(this._cancellable);
         this._button = new SysMonButton(this._sampler);
         Main.panel.addToStatusArea(this.uuid, this._button, 0, 'right');
 
-        this._sampler.sample();
-        this._button.update();
+        this._refresh();
         this._timerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, INTERVAL_SECS, () => {
-            this._sampler.sample();
-            this._button.update();
+            this._refresh();
             return GLib.SOURCE_CONTINUE;
         });
     }
 
+    async _refresh() {
+        if (this._busy)
+            return;
+        this._busy = true;
+        const cancellable = this._cancellable;
+        try {
+            await this._sampler.sample();
+            if (!cancellable.is_cancelled())
+                this._button.update();
+        } catch (e) {
+            logError(e, 'sysmon: sampling failed');
+        } finally {
+            if (cancellable === this._cancellable)
+                this._busy = false;
+        }
+    }
+
     disable() {
+        this._cancellable.cancel();
+        this._cancellable = null;
         GLib.source_remove(this._timerId);
         this._timerId = 0;
         this._button.destroy();
