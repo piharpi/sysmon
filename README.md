@@ -25,8 +25,8 @@ gnome-extensions enable sysmon@harpi
 | --- | --- |
 | Device | Lenovo ThinkPad E14 Gen 7 (21SX) |
 | CPU | Intel Core Ultra 7 255H (16 threads) |
-| GPU | Intel Arc Graphics (Arrow Lake-P, integrated) |
-| RAM | 32 GB (29.8 GiB usable) |
+| GPU | Intel Graphics (Arrow Lake-P, integrated) |
+| RAM | 29.8 GiB usable |
 | OS | Ubuntu 26.04.1 LTS, kernel 7.0.0-38-generic |
 | Desktop | GNOME Shell 50.1, Wayland session |
 | Temperature sensor | `coretemp` Package id 0 |
