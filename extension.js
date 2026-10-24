@@ -10,7 +10,7 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 const INTERVAL_SECS = 2;
-const HISTORY = 90; // 90 x 2 detik = 3 menit
+const HISTORY = 90; // 90 x 2 seconds = 3 minutes
 const HOVER_OPEN_MS = 250;
 const HOVER_CLOSE_MS = 400;
 
@@ -46,7 +46,7 @@ function listDir(path) {
     }
 }
 
-// Cari sensor suhu CPU; urutan = paling akurat dulu
+// Find the CPU temperature sensor, most accurate source first
 function findCpuTempPath() {
     const wanted = [
         ['coretemp', /^Package id/],
@@ -125,7 +125,7 @@ class Sampler {
         const gib = n => (n / 1048576).toFixed(1);
         this.info.ram = `${gib(used)} / ${gib(total)} GiB`;
         this.info.ramTotalKb = total;
-        // Swap cuma ditampilkan kalau memang terpakai, biar baris detail tidak kepanjangan
+        // Only list swap when it is in use, to keep the detail line short
         this.info.swap = swapUsed > 52428 ? `swap ${gib(swapUsed)} GiB` : '';
         return total ? 100 * used / total : null;
     }
@@ -138,7 +138,7 @@ class Sampler {
     }
 }
 
-// [tema terang, tema gelap] dari palet GNOME
+// [light theme, dark theme] from the GNOME palette
 const COLORS = {
     cpu: [[0.21, 0.52, 0.89], [0.38, 0.63, 0.92]],
     ram: [[0.15, 0.64, 0.41], [0.34, 0.89, 0.54]],
@@ -162,7 +162,7 @@ class Graph extends St.DrawingArea {
         const [w, h] = this.get_surface_size();
         const values = this._series();
 
-        // Ikuti warna teks tema supaya grid kelihatan di tema terang/gelap
+        // Follow the theme text color so the grid shows on light and dark themes
         const fg = this.get_theme_node().get_foreground_color();
         const [fr, fg2, fb] = [fg.red / 255, fg.green / 255, fg.blue / 255];
         const dark = 0.299 * fr + 0.587 * fg2 + 0.114 * fb > 0.5;
@@ -262,7 +262,7 @@ class SysMonButton extends PanelMenu.Button {
             this.menu.addMenuItem(s);
         this._last = last;
 
-        // Klik: kalau menu terbuka karena hover, klik "menyematkan" menu
+        // Click: if the menu was opened by hover, clicking pins it open
         this._clickGesture.set_enabled(false);
         this._click = new Clutter.ClickGesture();
         this._click.set_recognize_on_press(true);
@@ -297,7 +297,7 @@ class SysMonButton extends PanelMenu.Button {
         });
     }
 
-    // Tutup menu hover kalau pointer sudah keluar dari tombol & menu
+    // Close a hover-opened menu once the pointer leaves both button and menu
     _startHoverPoll() {
         let outsideSince = 0;
         this._hoverPollId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
@@ -352,7 +352,7 @@ class SysMonButton extends PanelMenu.Button {
         const temps = numbers(s.temp);
         this._temp.detail.text = temps.length
             ? `min ${fmt(Math.min(...temps), '°C')}   avg ${fmt(average(temps), '°C')}   max ${fmt(Math.max(...temps), '°C')}`
-            : 'sensor tidak ditemukan';
+            : 'sensor not found';
 
         if (this.menu.isOpen)
             this._redrawGraphs();
