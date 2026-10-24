@@ -130,10 +130,18 @@ class Sampler {
     }
 }
 
+// [tema terang, tema gelap] dari palet GNOME
+const COLORS = {
+    cpu: [[0.21, 0.52, 0.89], [0.38, 0.63, 0.92]],
+    ram: [[0.15, 0.64, 0.41], [0.34, 0.89, 0.54]],
+    temp: [[0.9, 0.38, 0], [1, 0.64, 0.28]],
+};
+
 const Graph = GObject.registerClass(
 class Graph extends St.DrawingArea {
     _init(series, color, min, max) {
         super._init({style_class: 'sysmon-graph'});
+        this.connect('style-changed', () => this.queue_repaint());
         this._series = series;
         this._color = color;
         this._min = min;
@@ -143,12 +151,13 @@ class Graph extends St.DrawingArea {
     vfunc_repaint() {
         const cr = this.get_context();
         const [w, h] = this.get_surface_size();
-        const [r, g, b] = this._color;
         const values = this._series();
 
         // Ikuti warna teks tema supaya grid kelihatan di tema terang/gelap
         const fg = this.get_theme_node().get_foreground_color();
         const [fr, fg2, fb] = [fg.red / 255, fg.green / 255, fg.blue / 255];
+        const dark = 0.299 * fr + 0.587 * fg2 + 0.114 * fb > 0.5;
+        const [r, g, b] = this._color[dark ? 1 : 0];
         cr.setSourceRGBA(fr, fg2, fb, 0.06);
         cr.rectangle(0, 0, w, h);
         cr.fill();
@@ -225,9 +234,9 @@ class SysMonButton extends PanelMenu.Button {
         this.add_child(this._label);
 
         const last = list => list.at(-1) ?? null;
-        this._cpu = new Section('CPU', () => sampler.cpu, [0.21, 0.52, 0.89], 0, 100);
-        this._ram = new Section('RAM', () => sampler.ram, [0.2, 0.82, 0.48], 0, 100);
-        this._temp = new Section('CPU Temp', () => sampler.temp, [1, 0.47, 0], 30, 100);
+        this._cpu = new Section('CPU', () => sampler.cpu, COLORS.cpu, 0, 100);
+        this._ram = new Section('RAM', () => sampler.ram, COLORS.ram, 0, 100);
+        this._temp = new Section('CPU Temp', () => sampler.temp, COLORS.temp, 30, 100);
         for (const s of [this._cpu, this._ram, this._temp])
             this.menu.addMenuItem(s);
         this._last = last;
