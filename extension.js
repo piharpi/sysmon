@@ -16,6 +16,12 @@ const HOVER_CLOSE_MS = 400;
 
 const decoder = new TextDecoder();
 
+const numbers = list => list.filter(v => v !== null);
+const average = list => {
+    const nums = numbers(list);
+    return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : null;
+};
+
 function readFile(path) {
     try {
         const [, bytes] = GLib.file_get_contents(path);
@@ -118,7 +124,9 @@ class Sampler {
         const swapUsed = swapTotal - kb('SwapFree');
         const gib = n => (n / 1048576).toFixed(1);
         this.info.ram = `${gib(used)} / ${gib(total)} GiB`;
-        this.info.swap = swapTotal ? `swap ${gib(swapUsed)} / ${gib(swapTotal)} GiB` : '';
+        this.info.ramTotalKb = total;
+        // Swap cuma ditampilkan kalau memang terpakai, biar baris detail tidak kepanjangan
+        this.info.swap = swapUsed > 52428 ? `swap ${gib(swapUsed)} GiB` : '';
         return total ? 100 * used / total : null;
     }
 
@@ -139,8 +147,9 @@ const COLORS = {
 
 const Graph = GObject.registerClass(
 class Graph extends St.DrawingArea {
-    _init(series, color, min, max) {
+    _init(series, color, min, max, showAvg) {
         super._init({style_class: 'sysmon-graph'});
+        this._showAvg = showAvg;
         this.connect('style-changed', () => this.queue_repaint());
         this._series = series;
         this._color = color;
@@ -192,13 +201,25 @@ class Graph extends St.DrawingArea {
             cr.setLineWidth(1.5);
             cr.stroke();
         }
+
+        const avg = this._showAvg ? average(values) : null;
+        if (avg !== null && points.length > 1) {
+            const ay = Math.round(y(avg)) + 0.5;
+            cr.setDash([3, 3], 0);
+            cr.setLineWidth(1);
+            cr.setSourceRGBA(r, g, b, 0.8);
+            cr.moveTo(points[0][0], ay);
+            cr.lineTo(points.at(-1)[0], ay);
+            cr.stroke();
+            cr.setDash([], 0);
+        }
         cr.$dispose();
     }
 });
 
 const Section = GObject.registerClass(
 class Section extends PopupMenu.PopupBaseMenuItem {
-    _init(title, series, color, min, max) {
+    _init(title, series, color, min, max, showAvg = false) {
         super._init({reactive: false, can_focus: false});
         const box = new St.BoxLayout({
             orientation: Clutter.Orientation.VERTICAL,
@@ -210,7 +231,7 @@ class Section extends PopupMenu.PopupBaseMenuItem {
         this.value = new St.Label({style_class: 'sysmon-value'});
         header.add_child(this.value);
         box.add_child(header);
-        this.graph = new Graph(series, color, min, max);
+        this.graph = new Graph(series, color, min, max, showAvg);
         box.add_child(this.graph);
         this.detail = new St.Label({style_class: 'sysmon-detail', opacity: 160});
         box.add_child(this.detail);
@@ -234,9 +255,9 @@ class SysMonButton extends PanelMenu.Button {
         this.add_child(this._label);
 
         const last = list => list.at(-1) ?? null;
-        this._cpu = new Section('CPU', () => sampler.cpu, COLORS.cpu, 0, 100);
+        this._cpu = new Section('CPU', () => sampler.cpu, COLORS.cpu, 0, 100, true);
         this._ram = new Section('RAM', () => sampler.ram, COLORS.ram, 0, 100);
-        this._temp = new Section('CPU Temp', () => sampler.temp, COLORS.temp, 30, 100);
+        this._temp = new Section('CPU Temp', () => sampler.temp, COLORS.temp, 30, 100, true);
         for (const s of [this._cpu, this._ram, this._temp])
             this.menu.addMenuItem(s);
         this._last = last;
@@ -315,13 +336,22 @@ class SysMonButton extends PanelMenu.Button {
 
         this._label.text = `CPU ${fmt(cpu, '%')}  RAM ${fmt(ram, '%')}  ${fmt(temp, '°C')}`;
         this._cpu.value.text = fmt(cpu, '%');
-        this._cpu.detail.text = s.info.load ? `load ${s.info.load}` : '';
+        this._cpu.detail.text = [
+            `avg ${fmt(average(s.cpu), '%')}`,
+            s.info.load ? `load ${s.info.load}` : '',
+        ].filter(t => t).join('   ');
+
         this._ram.value.text = fmt(ram, '%');
-        this._ram.detail.text = [s.info.ram, s.info.swap].filter(t => t).join('   ');
+        const rams = numbers(s.ram);
+        const peak = rams.length && s.info.ramTotalKb
+            ? `peak ${(Math.max(...rams) / 100 * s.info.ramTotalKb / 1048576).toFixed(1)} GiB`
+            : '';
+        this._ram.detail.text = [s.info.ram, peak, s.info.swap].filter(t => t).join('   ');
+
         this._temp.value.text = fmt(temp, '°C');
-        const temps = s.temp.filter(t => t !== null);
+        const temps = numbers(s.temp);
         this._temp.detail.text = temps.length
-            ? `min ${Math.round(Math.min(...temps))}°C   max ${Math.round(Math.max(...temps))}°C`
+            ? `min ${fmt(Math.min(...temps), '°C')}   avg ${fmt(average(temps), '°C')}   max ${fmt(Math.max(...temps), '°C')}`
             : 'sensor tidak ditemukan';
 
         if (this.menu.isOpen)
