@@ -1,0 +1,10 @@
+{
+  "uuid": "sysmon@harpi",
+  "name": "System Monitor Mini",
+  "description": "CPU usage, RAM usage and CPU temperature in the top bar, with history graphs on click or hover.",
+  "shell-version": [
+    "50"
+  ],
+  "version-name": "1.0",
+  "url": "https://github.com/piharpi/sysmon"
+}

@@ -1,0 +1,26 @@
+.sysmon-panel-label {
+  font-feature-settings: "tnum";
+  font-size: 0.9em;
+}
+
+.sysmon-section {
+  spacing: 4px;
+  padding: 4px 2px;
+}
+
+.sysmon-title {
+  font-weight: bold;
+}
+
+.sysmon-value {
+  font-feature-settings: "tnum";
+}
+
+.sysmon-detail {
+  font-size: 0.85em;
+}
+
+.sysmon-graph {
+  width: 280px;
+  height: 56px;
+}
